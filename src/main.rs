@@ -1,6 +1,5 @@
 use actix_cors::Cors;
-use actix_web::{middleware::Logger, web, App, HttpResponse, HttpServer, Result, HttpRequest, dev::ServiceRequest, dev::ServiceResponse, Error};
-use actix_web::middleware::from_fn;
+use actix_web::{middleware::Logger, web, App, HttpResponse, HttpServer, Result, HttpRequest};
 use serde::{Deserialize, Serialize};
 use std::env;
 use sha2::{Sha256, Digest};
@@ -11,6 +10,15 @@ struct TextGenerationRequest {
     model: Option<String>,
     max_tokens: Option<u32>,
     temperature: Option<f32>,
+    norwegian_context: Option<bool>,
+    organization_type: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct EmbeddingsRequest {
+    text: String,
+    model: Option<String>,
+    norwegian_context: Option<bool>,
 }
 
 #[derive(Serialize)]
@@ -19,6 +27,25 @@ struct TextGenerationResponse {
     model: String,
     processing_time_ms: u64,
     tokens_generated: u32,
+    timestamp: String,
+    generated_text: Option<String>, // Alias for felleskassen compatibility
+    inference_time_ms: Option<u64>, // Alias for felleskassen compatibility
+    _routing: Option<RoutingInfo>,
+}
+
+#[derive(Serialize)]
+struct RoutingInfo {
+    service: String,
+    #[serde(rename = "responseTime")]
+    response_time: u64,
+    version: String,
+}
+
+#[derive(Serialize)]
+struct EmbeddingsResponse {
+    embedding: Vec<f32>,
+    model: String,
+    processing_time_ms: u64,
     timestamp: String,
 }
 
@@ -38,22 +65,14 @@ struct ErrorResponse {
     timestamp: String,
 }
 
-// API Key validation middleware
-async fn validate_api_key(
-    req: ServiceRequest,
-    next: actix_web::dev::Next<impl actix_web::body::MessageBody>,
-) -> Result<ServiceResponse<impl actix_web::body::MessageBody>, Error> {
-    // Skip auth for health endpoint
-    if req.path() == "/api/health" {
-        return next.call(req).await;
-    }
-
+// API Key validation function
+fn validate_api_key_header(req: &HttpRequest) -> Result<(), HttpResponse> {
     let api_key = env::var("RUST_LLM_API_KEY").unwrap_or_else(|_| "".to_string());
     
     // If no API key is configured, allow requests (for development)
     if api_key.is_empty() {
         println!("⚠️  Warning: No API key configured, skipping authentication");
-        return next.call(req).await;
+        return Ok(());
     }
 
     let auth_header = req.headers().get("Authorization");
@@ -77,7 +96,7 @@ async fn validate_api_key(
                 };
                 
                 if expected_hash == provided_hash {
-                    return next.call(req).await;
+                    return Ok(());
                 }
             }
         }
@@ -90,10 +109,7 @@ async fn validate_api_key(
         timestamp: chrono::Utc::now().to_rfc3339(),
     };
 
-    Ok(req.into_response(
-        HttpResponse::Unauthorized()
-            .json(error_response)
-    ))
+    Err(HttpResponse::Unauthorized().json(error_response))
 }
 
 async fn health_check() -> Result<HttpResponse> {
@@ -109,30 +125,55 @@ async fn health_check() -> Result<HttpResponse> {
     Ok(HttpResponse::Ok().json(response))
 }
 
-async fn text_generation(req: web::Json<TextGenerationRequest>) -> Result<HttpResponse> {
+async fn text_generation(http_req: HttpRequest, req: web::Json<TextGenerationRequest>) -> Result<HttpResponse> {
+    // Validate API key
+    if let Err(error_response) = validate_api_key_header(&http_req) {
+        return Ok(error_response);
+    }
     let start_time = std::time::Instant::now();
     
-    // Simulate AI text generation (replace with actual LLM in production)
-    let generated_text = format!(
-        "AI Response to '{}': This is a simulated response from the Rust LLM service. In a production environment, this would be replaced with actual LLM inference.",
-        req.prompt
-    );
+    // Enhanced Norwegian context processing
+    let mut generated_text = if req.norwegian_context.unwrap_or(false) {
+        format!(
+            "Norsk AI-analyse for {}: {}. Merchant type: Ukjent norsk forhandler. VAT rate: 25% (standard norsk MVA). Category: Drift og administrasjon. Compliance: Følger norske frivillige organisasjoner regelverk.",
+            req.organization_type.as_deref().unwrap_or("forening"),
+            req.prompt
+        )
+    } else {
+        format!(
+            "AI Response to '{}': This is a simulated response from the Rust LLM service. In a production environment, this would be replaced with actual LLM inference.",
+            req.prompt
+        )
+    };
     
     let processing_time = start_time.elapsed().as_millis() as u64;
+    let model_name = req.model.clone().unwrap_or_else(|| "rust-llm-v1".to_string());
     
     let response = TextGenerationResponse {
-        text: generated_text,
-        model: req.model.clone().unwrap_or_else(|| "rust-llm-v1".to_string()),
+        text: generated_text.clone(),
+        model: model_name.clone(),
         processing_time_ms: processing_time,
         tokens_generated: req.max_tokens.unwrap_or(100),
         timestamp: chrono::Utc::now().to_rfc3339(),
+        // Felleskassen compatibility fields
+        generated_text: Some(generated_text),
+        inference_time_ms: Some(processing_time),
+        _routing: Some(RoutingInfo {
+            service: "rust-llm".to_string(),
+            response_time: processing_time,
+            version: "0.1.0".to_string(),
+        }),
     };
     
-    println!("Generated text response in {}ms", processing_time);
+    println!("Generated Norwegian text response in {}ms", processing_time);
     Ok(HttpResponse::Ok().json(response))
 }
 
-async fn list_models() -> Result<HttpResponse> {
+async fn list_models(http_req: HttpRequest) -> Result<HttpResponse> {
+    // Validate API key
+    if let Err(error_response) = validate_api_key_header(&http_req) {
+        return Ok(error_response);
+    }
     let models = serde_json::json!({
         "models": [
             {
@@ -148,6 +189,47 @@ async fn list_models() -> Result<HttpResponse> {
     });
     
     Ok(HttpResponse::Ok().json(models))
+}
+
+async fn embeddings_endpoint(http_req: HttpRequest, req: web::Json<EmbeddingsRequest>) -> Result<HttpResponse> {
+    // Validate API key
+    if let Err(error_response) = validate_api_key_header(&http_req) {
+        return Ok(error_response);
+    }
+    
+    let start_time = std::time::Instant::now();
+    
+    // Generate mock Norwegian-aware embeddings (256-dimensional)
+    let embedding = if req.norwegian_context.unwrap_or(false) {
+        // Simulate Norwegian merchant pattern embeddings
+        (0..256).map(|i| {
+            // Create patterns based on Norwegian text characteristics
+            let base = (i as f32 * 0.1).sin();
+            let norwegian_bias = if req.text.contains("REMA") || req.text.contains("ICA") || req.text.contains("COOP") {
+                0.8 // High confidence for known Norwegian chains
+            } else if req.text.contains("AS") || req.text.contains("Norge") {
+                0.6 // Medium confidence for Norwegian business patterns
+            } else {
+                0.3 // Lower confidence for unknown patterns
+            };
+            base * norwegian_bias
+        }).collect()
+    } else {
+        // Generic embeddings
+        (0..256).map(|i| (i as f32 * 0.1).sin()).collect()
+    };
+    
+    let processing_time = start_time.elapsed().as_millis() as u64;
+    
+    let response = EmbeddingsResponse {
+        embedding,
+        model: req.model.clone().unwrap_or_else(|| "sentence-transformer".to_string()),
+        processing_time_ms: processing_time,
+        timestamp: chrono::Utc::now().to_rfc3339(),
+    };
+    
+    println!("Generated embeddings response in {}ms", processing_time);
+    Ok(HttpResponse::Ok().json(response))
 }
 
 #[actix_web::main]
@@ -189,8 +271,10 @@ async fn main() -> std::io::Result<()> {
         App::new()
             .wrap(Logger::default())
             .wrap(cors)
-            .wrap(from_fn(validate_api_key))
             .route("/api/health", web::get().to(health_check))
+            // Compatibility endpoint for felleskassen
+            .route("/api/ai/text-generation", web::post().to(text_generation))
+            .route("/api/ai/embeddings", web::post().to(embeddings_endpoint))
             .service(
                 web::scope("/api/v1")
                     .service(
