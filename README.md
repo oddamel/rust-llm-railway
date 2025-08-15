@@ -2,6 +2,8 @@
 
 A high-performance Rust-based Language Model service designed for Railway deployment.
 
+**Status**: Ready for deployment ✅ (Updated: Aug 15, 2025)
+
 ## Features
 
 - **Fast HTTP API** using Actix-web
