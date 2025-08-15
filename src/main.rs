@@ -2,10 +2,6 @@ use actix_cors::Cors;
 use actix_web::{middleware::Logger, web, App, HttpResponse, HttpServer, Result};
 use serde::{Deserialize, Serialize};
 use std::env;
-use std::sync::Arc;
-use std::time::Instant;
-use tracing::{info, Level};
-use tracing_subscriber::FmtSubscriber;
 
 #[derive(Deserialize)]
 struct TextGenerationRequest {
@@ -33,18 +29,16 @@ struct HealthResponse {
     uptime_seconds: u64,
 }
 
-async fn health_check(data: web::Data<Arc<Instant>>) -> Result<HttpResponse> {
-    let uptime = data.elapsed().as_secs();
-    
+async fn health_check() -> Result<HttpResponse> {
     let response = HealthResponse {
         status: "healthy".to_string(),
         service: "rust-llm-service".to_string(),
         version: "0.1.0".to_string(),
         timestamp: chrono::Utc::now().to_rfc3339(),
-        uptime_seconds: uptime,
+        uptime_seconds: 0,
     };
     
-    info!("Health check requested - uptime: {}s", uptime);
+    println!("Health check requested");
     Ok(HttpResponse::Ok().json(response))
 }
 
@@ -67,7 +61,7 @@ async fn text_generation(req: web::Json<TextGenerationRequest>) -> Result<HttpRe
         timestamp: chrono::Utc::now().to_rfc3339(),
     };
     
-    info!("Generated text response in {}ms", processing_time);
+    println!("Generated text response in {}ms", processing_time);
     Ok(HttpResponse::Ok().json(response))
 }
 
@@ -91,17 +85,7 @@ async fn list_models() -> Result<HttpResponse> {
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    // Initialize logging
-    let _subscriber = FmtSubscriber::builder()
-        .with_max_level(Level::INFO)
-        .with_target(false)
-        .with_thread_ids(true)
-        .with_thread_names(true)
-        .with_file(true)
-        .with_line_number(true)
-        .init();
-
-    info!("🦀 Starting Rust LLM Service...");
+    println!("🦀 Starting Rust LLM Service...");
 
     // Get configuration from environment
     let host = env::var("HOST").unwrap_or_else(|_| "0.0.0.0".to_string());
@@ -110,17 +94,14 @@ async fn main() -> std::io::Result<()> {
         .parse::<u16>()
         .expect("PORT must be a valid port number");
 
-    info!("🚀 Rust LLM Service starting...");
-    info!("   - Host: {}", host);
-    info!("   - Port: {}", port);
-    info!("   - Environment PORT: {:?}", env::var("PORT"));
-    info!("   - Binding to: {}:{}", host, port);
-
-    // Track startup time for uptime calculation
-    let start_time = Arc::new(Instant::now());
+    println!("🚀 Rust LLM Service starting...");
+    println!("   - Host: {}", host);
+    println!("   - Port: {}", port);
+    println!("   - Environment PORT: {:?}", env::var("PORT"));
+    println!("   - Binding to: {}:{}", host, port);
 
     // Start HTTP server
-    HttpServer::new(move || {
+    HttpServer::new(|| {
         let cors = Cors::default()
             .allow_any_origin()
             .allow_any_method()
@@ -128,7 +109,6 @@ async fn main() -> std::io::Result<()> {
             .max_age(3600);
 
         App::new()
-            .app_data(web::Data::new(start_time.clone()))
             .wrap(Logger::default())
             .wrap(cors)
             .route("/api/health", web::get().to(health_check))
