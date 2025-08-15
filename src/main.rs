@@ -2,6 +2,8 @@ use actix_cors::Cors;
 use actix_web::{middleware::Logger, web, App, HttpResponse, HttpServer, Result};
 use serde::{Deserialize, Serialize};
 use std::env;
+use std::sync::Arc;
+use std::time::Instant;
 use tracing::{info, Level};
 use tracing_subscriber::FmtSubscriber;
 
@@ -31,15 +33,18 @@ struct HealthResponse {
     uptime_seconds: u64,
 }
 
-async fn health_check() -> Result<HttpResponse> {
+async fn health_check(data: web::Data<Arc<Instant>>) -> Result<HttpResponse> {
+    let uptime = data.elapsed().as_secs();
+    
     let response = HealthResponse {
         status: "healthy".to_string(),
         service: "rust-llm-service".to_string(),
         version: "0.1.0".to_string(),
         timestamp: chrono::Utc::now().to_rfc3339(),
-        uptime_seconds: 0, // TODO: implement actual uptime tracking
+        uptime_seconds: uptime,
     };
     
+    info!("Health check requested - uptime: {}s", uptime);
     Ok(HttpResponse::Ok().json(response))
 }
 
@@ -105,10 +110,17 @@ async fn main() -> std::io::Result<()> {
         .parse::<u16>()
         .expect("PORT must be a valid port number");
 
-    info!("🚀 Rust LLM Service will run on {}:{}", host, port);
+    info!("🚀 Rust LLM Service starting...");
+    info!("   - Host: {}", host);
+    info!("   - Port: {}", port);
+    info!("   - Environment PORT: {:?}", env::var("PORT"));
+    info!("   - Binding to: {}:{}", host, port);
+
+    // Track startup time for uptime calculation
+    let start_time = Arc::new(Instant::now());
 
     // Start HTTP server
-    HttpServer::new(|| {
+    HttpServer::new(move || {
         let cors = Cors::default()
             .allow_any_origin()
             .allow_any_method()
@@ -116,6 +128,7 @@ async fn main() -> std::io::Result<()> {
             .max_age(3600);
 
         App::new()
+            .app_data(web::Data::new(start_time.clone()))
             .wrap(Logger::default())
             .wrap(cors)
             .route("/api/health", web::get().to(health_check))
