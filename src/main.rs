@@ -1,7 +1,9 @@
 use actix_cors::Cors;
-use actix_web::{middleware::Logger, web, App, HttpResponse, HttpServer, Result};
+use actix_web::{middleware::Logger, web, App, HttpResponse, HttpServer, Result, HttpRequest, dev::ServiceRequest, dev::ServiceResponse, Error};
+use actix_web::middleware::from_fn;
 use serde::{Deserialize, Serialize};
 use std::env;
+use sha2::{Sha256, Digest};
 
 #[derive(Deserialize)]
 struct TextGenerationRequest {
@@ -27,6 +29,71 @@ struct HealthResponse {
     version: String,
     timestamp: String,
     uptime_seconds: u64,
+}
+
+#[derive(Serialize)]
+struct ErrorResponse {
+    error: String,
+    message: String,
+    timestamp: String,
+}
+
+// API Key validation middleware
+async fn validate_api_key(
+    req: ServiceRequest,
+    next: actix_web::dev::Next<impl actix_web::body::MessageBody>,
+) -> Result<ServiceResponse<impl actix_web::body::MessageBody>, Error> {
+    // Skip auth for health endpoint
+    if req.path() == "/api/health" {
+        return next.call(req).await;
+    }
+
+    let api_key = env::var("RUST_LLM_API_KEY").unwrap_or_else(|_| "".to_string());
+    
+    // If no API key is configured, allow requests (for development)
+    if api_key.is_empty() {
+        println!("⚠️  Warning: No API key configured, skipping authentication");
+        return next.call(req).await;
+    }
+
+    let auth_header = req.headers().get("Authorization");
+    
+    if let Some(auth_value) = auth_header {
+        if let Ok(auth_str) = auth_value.to_str() {
+            if auth_str.starts_with("Bearer ") {
+                let provided_key = &auth_str[7..]; // Remove "Bearer " prefix
+                
+                // Use constant-time comparison to prevent timing attacks
+                let expected_hash = {
+                    let mut hasher = Sha256::new();
+                    hasher.update(api_key.as_bytes());
+                    hex::encode(hasher.finalize())
+                };
+                
+                let provided_hash = {
+                    let mut hasher = Sha256::new();
+                    hasher.update(provided_key.as_bytes());
+                    hex::encode(hasher.finalize())
+                };
+                
+                if expected_hash == provided_hash {
+                    return next.call(req).await;
+                }
+            }
+        }
+    }
+
+    // Authentication failed
+    let error_response = ErrorResponse {
+        error: "Unauthorized".to_string(),
+        message: "Invalid or missing API key. Include 'Authorization: Bearer <your-api-key>' header.".to_string(),
+        timestamp: chrono::Utc::now().to_rfc3339(),
+    };
+
+    Ok(req.into_response(
+        HttpResponse::Unauthorized()
+            .json(error_response)
+    ))
 }
 
 async fn health_check() -> Result<HttpResponse> {
@@ -100,6 +167,17 @@ async fn main() -> std::io::Result<()> {
     println!("   - Environment PORT: {:?}", env::var("PORT"));
     println!("   - Binding to: {}:{}", host, port);
 
+    // Generate a secure API key if none is set
+    if env::var("RUST_LLM_API_KEY").is_err() {
+        let api_key = uuid::Uuid::new_v4().to_string();
+        println!("🔑 Generated API key: {}", api_key);
+        println!("   Set RUST_LLM_API_KEY environment variable to: {}", api_key);
+        println!("   For security, set this in your Railway/Render environment variables");
+        env::set_var("RUST_LLM_API_KEY", &api_key);
+    } else {
+        println!("🔒 API key authentication enabled");
+    }
+
     // Start HTTP server
     HttpServer::new(|| {
         let cors = Cors::default()
@@ -111,6 +189,7 @@ async fn main() -> std::io::Result<()> {
         App::new()
             .wrap(Logger::default())
             .wrap(cors)
+            .wrap(from_fn(validate_api_key))
             .route("/api/health", web::get().to(health_check))
             .service(
                 web::scope("/api/v1")
