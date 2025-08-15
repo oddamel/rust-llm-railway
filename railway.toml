@@ -1,9 +1,7 @@
 [build]
-builder = "NIXPACKS"
-buildCommand = "cargo build --release"
+builder = "DOCKERFILE"
 
 [deploy]
-startCommand = "target/release/rust-llm-service"
 healthcheckPath = "/api/health"
 healthcheckTimeout = 300
 restartPolicyType = "ON_FAILURE"
@@ -13,6 +11,3 @@ restartPolicyMaxRetries = 3
 RUST_LOG = "info"
 HOST = "0.0.0.0"
 PORT = "$PORT"
-
-[networking]
-publicPort = 80
